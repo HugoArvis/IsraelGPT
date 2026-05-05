@@ -1,0 +1,12 @@
+.env
+node_modules/
+__pycache__/
+*.pyc
+*.parquet
+*.pth
+*.ckpt
+dist/
+.venv/
+mlruns/
+*.egg-info/
+.DS_Store
