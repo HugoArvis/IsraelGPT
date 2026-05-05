@@ -116,10 +116,14 @@ python data/feature_engineering.py
 ```
 Check output for label distribution (SELL / HOLD / BUY counts).
 
-**Step 4 — Train the TFT model** (takes hours, CPU is slow but works):
+**Step 4 — Train the TFT model** (interactive menu — pick Full or Light):
 ```powershell
-python training/train_supervised.py
+python train.py
 ```
+A menu appears:
+- `[1] Full model` — all 15 tickers, 5 folds, 50 epochs. CPU: ~20-40h, RTX 3060: ~45-90 min.
+- `[2] Light (test run)` — 3 tickers, 2 folds, 10 epochs. CPU: ~30-60 min, RTX 3060: ~5-10 min.
+
 Checkpoints saved to `models/checkpoints/`.
 
 **Step 5 — Evaluate accuracy**:
