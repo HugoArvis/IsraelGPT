@@ -41,12 +41,21 @@ class TFTModel:
         return cls(model)
 
     def save(self, path: str | None = None):
+        import shutil
         os.makedirs(MODEL_DIR, exist_ok=True)
         if path is None:
             path = os.path.join(MODEL_DIR, "tft_latest.ckpt")
-        if self._model is not None:
-            torch.save(self._model.state_dict(), path)
-            logger.info(f"TFT model saved to {path}")
+        # ModelCheckpoint already saved proper Lightning checkpoints for each fold.
+        # Copy the most recent fold checkpoint so load_from_checkpoint works correctly.
+        fold_ckpts = glob.glob(os.path.join(MODEL_DIR, "tft_fold*.ckpt"))
+        if fold_ckpts:
+            best = max(fold_ckpts, key=os.path.getmtime)
+            shutil.copy2(best, path)
+            logger.info(f"TFT model saved to {path} (copied from {os.path.basename(best)})")
+        elif self._model is not None:
+            # Fallback: save Lightning checkpoint via the model's internal method
+            self._model.trainer.save_checkpoint(path) if hasattr(self._model, "trainer") and self._model.trainer else None
+            logger.warning(f"No fold checkpoints found — attempted direct save to {path}")
 
     @classmethod
     def load_latest(cls) -> "TFTModel | None":
@@ -54,7 +63,9 @@ class TFTModel:
         if not checkpoints:
             logger.warning(f"No checkpoints found in {MODEL_DIR}")
             return None
-        latest = max(checkpoints, key=os.path.getmtime)
+        # Prefer tft_latest.ckpt if it exists, otherwise pick most recent
+        latest_path = os.path.join(MODEL_DIR, "tft_latest.ckpt")
+        latest = latest_path if os.path.exists(latest_path) else max(checkpoints, key=os.path.getmtime)
         logger.info(f"Loading checkpoint: {latest}")
         try:
             from pytorch_forecasting import TemporalFusionTransformer
