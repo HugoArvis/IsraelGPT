@@ -17,8 +17,11 @@ TICKERS = [
 ]
 PRIMARY_TICKER = "AAPL"
 
+# Macro indicators fetched alongside price data (market-wide context)
+MACRO_TICKERS = ["^VIX", "^TNX", "DX-Y.NYB", "GC=F", "^GSPC"]
+
 # Data parameters
-PRICE_HISTORY_YEARS = 5
+PRICE_HISTORY_YEARS = 10
 ENCODER_LENGTH = 60       # days of lookback for TFT
 PREDICTION_HORIZON = 5    # days forward for label
 
@@ -58,6 +61,11 @@ DRAWDOWN_PENALTY_THRESHOLD = 0.15
 
 # Score / position formula constants
 SCORE_NEUTRAL = 5.0
+
+# Temporal sample weighting — exponential decay half-life in days.
+# Recent data gets weight ~1.0; data from HALF_LIFE days ago gets weight ~0.5.
+# Set to None to disable weighting entirely.
+TEMPORAL_WEIGHT_HALF_LIFE = 365
 
 # Scheduler (NY time)
 SCHEDULE_HOUR = 15

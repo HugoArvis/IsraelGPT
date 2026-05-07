@@ -26,6 +26,10 @@ lightning>=2.2.0
 stable-baselines3>=2.3.0
 gymnasium>=0.29.1
 
+# ── Alternative / comparison models ─────────────────────────────────────────
+lightgbm>=4.3.0
+scikit-learn>=1.4.0
+
 # ── Experiment tracking ──────────────────────────────────────────────────────
 # greenlet is a transitive dep of mlflow/SQLAlchemy — install binary first:
 #   pip install greenlet --only-binary :all:

@@ -3,7 +3,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import numpy as np
 from loguru import logger
-from config import TICKERS, DATA_DIR, ENCODER_LENGTH, PREDICTION_HORIZON, SELL_THRESHOLD, BUY_THRESHOLD
+from config import TICKERS, DATA_DIR, ENCODER_LENGTH, PREDICTION_HORIZON, SELL_THRESHOLD, BUY_THRESHOLD, MACRO_TICKERS
 
 try:
     import ta
@@ -23,6 +23,42 @@ def _load_prices(ticker: str) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
     df.columns = [c.lower() if isinstance(c, str) else c[0].lower() for c in df.columns]
     return df
+
+
+def _load_macro() -> pd.DataFrame:
+    """
+    Load market-wide macro indicators (VIX, 10Y yield, DXY, Gold, SP500).
+    Returns a daily DataFrame aligned to trading days.
+    Falls back gracefully if files are missing — run fetch_prices.py first.
+    """
+    # ticker → column name mapping
+    macro_map = {
+        "^VIX": "vix",
+        "^TNX": "tnx",
+        "DX-Y.NYB": "dxy",
+        "GC=F": "gold",
+        "^GSPC": "sp500",
+    }
+    frames = {}
+    for ticker, col in macro_map.items():
+        path = os.path.join(DATA_DIR, f"{ticker}_prices.parquet")
+        if not os.path.exists(path):
+            logger.debug(f"Macro file missing for {ticker} — run fetch_prices.py")
+            continue
+        try:
+            df = pd.read_parquet(path)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [c.lower() if isinstance(c, str) else c[0].lower() for c in df.columns]
+            frames[col] = df["close"].rename(col)
+        except Exception as e:
+            logger.warning(f"Could not load macro {ticker}: {e}")
+
+    if not frames:
+        return pd.DataFrame()
+    macro = pd.concat(frames.values(), axis=1)
+    macro.index = pd.to_datetime(macro.index)
+    return macro
 
 
 def _load_sentiment(ticker: str) -> pd.DataFrame:
@@ -73,9 +109,10 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 def _compute_labels(df: pd.DataFrame, sp500_df: pd.DataFrame) -> pd.DataFrame:
     """
     Label each day: SELL=0, HOLD=1, BUY=2
-    based on 5-day forward relative return vs SP500.
-    Label uses close[t+5] / close[t] - 1 minus SP500 equivalent.
-    Data leakage safe: label is derived from future prices, excluded from features.
+    Dynamic thresholds: 1× rolling 20-day volatility of relative returns,
+    floored at the base thresholds from config.
+    This prevents tiny thresholds in low-vol regimes and adapts to high-vol periods.
+    Data leakage safe: labels derived from future prices, never used as input features.
     """
     ticker_fwd = df["close"].shift(-PREDICTION_HORIZON) / df["close"] - 1
     if sp500_df is not None and not sp500_df.empty:
@@ -85,9 +122,14 @@ def _compute_labels(df: pd.DataFrame, sp500_df: pd.DataFrame) -> pd.DataFrame:
     else:
         relative_return = ticker_fwd
 
+    # Dynamic thresholds: rolling volatility, floored at base config values
+    rolling_vol = relative_return.rolling(20).std().fillna(abs(BUY_THRESHOLD))
+    buy_thresh = rolling_vol.clip(lower=BUY_THRESHOLD)
+    sell_thresh = rolling_vol.clip(lower=abs(SELL_THRESHOLD))
+
     labels = np.where(
-        relative_return < SELL_THRESHOLD, 0,
-        np.where(relative_return > BUY_THRESHOLD, 2, 1)
+        relative_return > buy_thresh, 2,
+        np.where(relative_return < -sell_thresh, 0, 1)
     )
     df["label"] = labels
     df["relative_return"] = relative_return
@@ -104,10 +146,14 @@ def build_features(ticker: str | None = None) -> pd.DataFrame:
     except Exception:
         sp500_df = None
 
+    # Load macro features once — same for all tickers
+    macro = _load_macro()
+
     for tkr in tickers:
         try:
             df = _load_prices(tkr)
             df = _compute_indicators(df)
+
             sentiment = _load_sentiment(tkr)
             if not sentiment.empty:
                 df = df.join(
@@ -119,6 +165,14 @@ def build_features(ticker: str | None = None) -> pd.DataFrame:
                 df["sentiment_pos"] = 0.333
                 df["sentiment_neg"] = 0.333
                 df["n_articles"] = 0
+
+            # Join macro features (forward-fill to handle non-overlapping market days)
+            if not macro.empty:
+                df = df.join(macro, how="left")
+                df[macro.columns] = df[macro.columns].ffill()
+            else:
+                for col in ["vix", "tnx", "dxy", "gold", "sp500"]:
+                    df[col] = 0.0
 
             df["day_of_week"] = df.index.dayofweek
             df["quarter_end"] = ((df.index.month % 3 == 0) & (df.index.day >= 25)).astype(int)
@@ -142,6 +196,7 @@ FEATURE_COLUMNS = [
     "rsi_14", "macd", "macd_signal", "bb_upper", "bb_lower",
     "atr_14", "sma_20", "sma_50", "ema_12", "ema_26", "volume_ratio",
     "compound", "sentiment_pos", "sentiment_neg", "n_articles",
+    "vix", "tnx", "dxy", "gold", "sp500",
     "day_of_week", "quarter_end",
 ]
 

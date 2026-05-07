@@ -19,6 +19,7 @@ class TFTModel:
 
     def __init__(self, model=None):
         self._model = model
+        self._ensemble: list = []  # extra fold models for averaged inference
 
     @classmethod
     def from_dataset(cls, dataset):
@@ -59,16 +60,35 @@ class TFTModel:
 
     @classmethod
     def load_latest(cls) -> "TFTModel | None":
-        checkpoints = glob.glob(os.path.join(MODEL_DIR, "*.ckpt"))
-        if not checkpoints:
+        from pytorch_forecasting import TemporalFusionTransformer
+
+        # Load all fold checkpoints as an ensemble
+        fold_ckpts = sorted(glob.glob(os.path.join(MODEL_DIR, "tft_fold*.ckpt")))
+        ensemble_models = []
+        for ckpt in fold_ckpts:
+            try:
+                m = TemporalFusionTransformer.load_from_checkpoint(ckpt)
+                m.eval()
+                ensemble_models.append(m)
+                logger.info(f"Ensemble: loaded {os.path.basename(ckpt)}")
+            except Exception as e:
+                logger.warning(f"Could not load {ckpt} for ensemble: {e}")
+
+        if ensemble_models:
+            instance = cls(ensemble_models[0])
+            instance._ensemble = ensemble_models
+            logger.info(f"Ensemble of {len(ensemble_models)} fold model(s) ready")
+            return instance
+
+        # Fallback to tft_latest.ckpt if no fold checkpoints found
+        latest_path = os.path.join(MODEL_DIR, "tft_latest.ckpt")
+        all_ckpts = glob.glob(os.path.join(MODEL_DIR, "*.ckpt"))
+        if not all_ckpts:
             logger.warning(f"No checkpoints found in {MODEL_DIR}")
             return None
-        # Prefer tft_latest.ckpt if it exists, otherwise pick most recent
-        latest_path = os.path.join(MODEL_DIR, "tft_latest.ckpt")
-        latest = latest_path if os.path.exists(latest_path) else max(checkpoints, key=os.path.getmtime)
-        logger.info(f"Loading checkpoint: {latest}")
+        latest = latest_path if os.path.exists(latest_path) else max(all_ckpts, key=os.path.getmtime)
+        logger.info(f"Loading single checkpoint: {latest}")
         try:
-            from pytorch_forecasting import TemporalFusionTransformer
             model = TemporalFusionTransformer.load_from_checkpoint(latest)
             return cls(model)
         except Exception as e:
@@ -77,22 +97,28 @@ class TFTModel:
 
     def predict_latest(self, features: pd.DataFrame) -> tuple[float, float, float]:
         """
-        Run inference on the most recent ENCODER_LENGTH rows of features.
-        Returns (p_sell, p_hold, p_buy).
+        Run inference and return (p_sell, p_hold, p_buy).
+        If multiple fold models are loaded, averages their probability distributions
+        before computing the final score — ensemble reduces prediction variance.
         """
         if self._model is None:
             logger.error("Model not loaded")
             return 0.333, 0.334, 0.333
 
-        self._model.eval()
-        # Build a minimal dataloader for the last window
+        models = self._ensemble if self._ensemble else [self._model]
         try:
             from training.dataset import build_inference_dataloader
             dl = build_inference_dataloader(features)
+            all_probs = []
             with torch.no_grad():
-                predictions = self._model.predict(dl, mode="raw")
-            probs = torch.softmax(predictions["prediction"][0, -1], dim=-1).numpy()
-            return float(probs[0]), float(probs[1]), float(probs[2])
+                for m in models:
+                    m.eval()
+                    preds = m.predict(dl, mode="raw")
+                    probs = torch.softmax(preds["prediction"][0, -1], dim=-1)
+                    all_probs.append(probs)
+            avg_probs = torch.stack(all_probs).mean(dim=0).numpy()
+            logger.debug(f"Ensemble ({len(models)} models) probs: {avg_probs}")
+            return float(avg_probs[0]), float(avg_probs[1]), float(avg_probs[2])
         except Exception as e:
             logger.error(f"Prediction failed: {e}")
             return 0.333, 0.334, 0.333

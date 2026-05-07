@@ -4,7 +4,7 @@ import pandas as pd
 import yfinance as yf
 from loguru import logger
 from datetime import datetime, timedelta
-from config import TICKERS, PRICE_HISTORY_YEARS, DATA_DIR
+from config import TICKERS, MACRO_TICKERS, PRICE_HISTORY_YEARS, DATA_DIR
 
 
 def _parquet_path(ticker: str) -> str:
@@ -49,7 +49,8 @@ def fetch_prices(ticker: str, force: bool = False) -> pd.DataFrame:
 
 def fetch_all_prices(force: bool = False) -> dict[str, pd.DataFrame]:
     prices = {}
-    for ticker in TICKERS:
+    all_tickers = list(TICKERS) + list(MACRO_TICKERS)
+    for ticker in all_tickers:
         try:
             prices[ticker] = fetch_prices(ticker, force=force)
         except Exception as e:
