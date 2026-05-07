@@ -106,6 +106,26 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _compute_labels_for_horizon(df: pd.DataFrame, sp500_df: pd.DataFrame, horizon: int) -> np.ndarray:
+    """Return a label array (0=SELL, 1=HOLD, 2=BUY) for a given forward horizon."""
+    ticker_fwd = df["close"].shift(-horizon) / df["close"] - 1
+    if sp500_df is not None and not sp500_df.empty:
+        sp500_aligned = sp500_df["close"].reindex(df.index).ffill()
+        sp500_fwd = sp500_aligned.shift(-horizon) / sp500_aligned - 1
+        relative_return = ticker_fwd - sp500_fwd
+    else:
+        relative_return = ticker_fwd
+
+    rolling_vol = relative_return.rolling(20).std().fillna(abs(BUY_THRESHOLD))
+    buy_thresh  = rolling_vol.clip(lower=BUY_THRESHOLD)
+    sell_thresh = rolling_vol.clip(lower=abs(SELL_THRESHOLD))
+
+    return np.where(
+        relative_return > buy_thresh, 2,
+        np.where(relative_return < -sell_thresh, 0, 1)
+    )
+
+
 def _compute_labels(df: pd.DataFrame, sp500_df: pd.DataFrame) -> pd.DataFrame:
     """
     Label each day: SELL=0, HOLD=1, BUY=2
@@ -178,6 +198,8 @@ def build_features(ticker: str | None = None) -> pd.DataFrame:
             df["quarter_end"] = ((df.index.month % 3 == 0) & (df.index.day >= 25)).astype(int)
 
             df = _compute_labels(df, sp500_df)
+            df["label_1d"]  = _compute_labels_for_horizon(df, sp500_df, 1)
+            df["label_21d"] = _compute_labels_for_horizon(df, sp500_df, 21)
             df["ticker"] = tkr
             df.dropna(subset=["rsi_14", "macd", "close"], inplace=True)
             all_frames.append(df)

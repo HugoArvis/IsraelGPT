@@ -22,8 +22,11 @@ def _daily_job():
         # Inference + order placement handled by alpaca_connector
         # (model must already be trained and loaded)
         from alpaca_connector import AlpacaConnector
+        import main as _main  # update shared state so WebSocket picks it up
         connector = AlpacaConnector()
-        connector.run_inference_and_trade(features)
+        result = connector.run_inference_and_trade(features)
+        if result:
+            _main._state["last_signal"] = result
     except Exception as e:
         logger.error(f"Daily job failed: {e}")
 

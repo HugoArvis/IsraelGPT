@@ -62,6 +62,10 @@ DRAWDOWN_PENALTY_THRESHOLD = 0.15
 # Score / position formula constants
 SCORE_NEUTRAL = 5.0
 
+# Multi-horizon prediction weights (must sum to 1.0)
+# TFT covers the weekly signal; LightGBM covers daily and monthly.
+HORIZON_WEIGHTS = {"daily": 0.20, "weekly": 0.50, "monthly": 0.30}
+
 # Temporal sample weighting — exponential decay half-life in days.
 # Recent data gets weight ~1.0; data from HALF_LIFE days ago gets weight ~0.5.
 # Set to None to disable weighting entirely.

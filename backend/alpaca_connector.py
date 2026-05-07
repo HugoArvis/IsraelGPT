@@ -120,37 +120,49 @@ class AlpacaConnector:
         else:
             logger.warning("[STUB] Would liquidate all positions")
 
-    def run_inference_and_trade(self, features):
-        """Called by scheduler after features are built. Loads model, infers, trades."""
-        logger.info("Running inference pipeline...")
+    def run_inference_and_trade(self, features) -> dict:
+        """Called by scheduler after features are built. Returns the signal dict."""
+        logger.info("Running multi-horizon inference pipeline...")
         try:
-            from models.tft_model import TFTModel
+            from models.strategy_scorer import MultiHorizonScorer
             from risk_manager import RiskManager
 
-            model = TFTModel.load_latest()
-            if model is None:
-                logger.warning("No trained model found — skipping inference")
-                return
+            scorer = MultiHorizonScorer().load()
+            if not scorer.is_ready:
+                logger.warning("No trained TFT model found — skipping inference")
+                return {}
 
-            p_sell, p_hold, p_buy = model.predict_latest(features)
-            risk = RiskManager()
+            result = scorer.score(features)
             portfolio = self.get_portfolio()
+
+            risk = RiskManager()
             score, position_pct, should_trade = risk.validate_order(
                 ticker=PRIMARY_TICKER,
-                p_sell=p_sell,
-                p_hold=p_hold,
-                p_buy=p_buy,
+                p_sell=result["p_sell"],
+                p_hold=result["p_hold"],
+                p_buy=result["p_buy"],
                 portfolio_value=portfolio["total_value"],
                 start_value=self._start_value,
-                avg_volume=5_000_000,  # fetched dynamically in production
+                avg_volume=5_000_000,
             )
+            # Override score/position with risk-validated values
+            result["score"]        = score
+            result["position_pct"] = position_pct
+
             logger.info(
-                f"Signal: score={score:.2f} p_sell={p_sell:.3f} p_hold={p_hold:.3f} "
-                f"p_buy={p_buy:.3f} position={position_pct:.1f}% trade={should_trade}"
+                f"Signal: score={score:.2f}  "
+                f"daily={result['horizons']['daily']['signal']}  "
+                f"weekly={result['horizons']['weekly']['signal']}  "
+                f"monthly={result['horizons']['monthly']['signal']}  "
+                f"→ {result['strategy']}"
             )
+
             if should_trade:
                 notional = abs(position_pct / 100.0) * portfolio["total_value"]
                 side = "buy" if position_pct > 0 else "sell"
                 self.place_order(PRIMARY_TICKER, side, notional)
+
+            return result
         except Exception as e:
             logger.error(f"Inference pipeline error: {e}")
+            return {}

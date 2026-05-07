@@ -72,8 +72,28 @@ def train_supervised(features_df, n_folds: int = 5):
 
     if best_model:
         best_model.save(os.path.join(MODEL_DIR, "tft_latest.ckpt"))
-        logger.info(f"Best model saved — val_loss={best_accuracy:.4f}")
+        logger.info(f"Best TFT saved — val_loss={best_accuracy:.4f}")
+
+    # Train LightGBM daily (1d) and monthly (21d) models — fast (<2 min each)
+    _train_lgbm_horizons(features_df)
+
     return best_model
+
+
+def _train_lgbm_horizons(features_df):
+    """Train LightGBM models for daily and monthly horizons."""
+    try:
+        from models.lgbm_model import LGBMModel
+        for horizon in ("1d", "21d"):
+            label = "label_1d" if horizon == "1d" else "label_21d"
+            if label not in features_df.columns:
+                logger.warning(f"Column {label} missing — re-run fetch_prices + feature_engineering")
+                continue
+            logger.info(f"Training LightGBM [{horizon}]...")
+            m = LGBMModel.train(features_df, horizon=horizon)
+            m.save()
+    except Exception as e:
+        logger.error(f"LightGBM horizon training failed: {e}")
 
 
 if __name__ == "__main__":

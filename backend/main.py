@@ -133,6 +133,7 @@ def _is_market_hours() -> bool:
 
 def _build_live_payload() -> dict:
     last = _state.get("last_signal") or {}
+    horizons = last.get("horizons", {})
     portfolio = {}
     try:
         portfolio = alpaca.get_portfolio()
@@ -142,17 +143,25 @@ def _build_live_payload() -> dict:
         "type": "live_update",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ticker": last.get("ticker", PRIMARY_TICKER),
-        "score": last.get("score", 5.0),
-        "p_sell": last.get("p_sell", 0.333),
-        "p_hold": last.get("p_hold", 0.334),
-        "p_buy": last.get("p_buy", 0.333),
+        # Combined multi-horizon signal
+        "score":        last.get("score", 5.0),
+        "p_sell":       last.get("p_sell", 0.333),
+        "p_hold":       last.get("p_hold", 0.334),
+        "p_buy":        last.get("p_buy", 0.333),
+        "confidence":   last.get("confidence", 0.0),
         "position_pct": last.get("position_pct", 0),
-        "portfolio_value": portfolio.get("total_value", 100_000.0),
-        "pnl_today_pct": portfolio.get("pnl_today_pct", 0.0),
-        "pnl_total_pct": portfolio.get("pnl_total_pct", 0.0),
-        "sharpe_rolling": last.get("sharpe_rolling", 0.0),
+        "strategy":     last.get("strategy", "—"),
+        # Per-horizon breakdown
+        "daily":   horizons.get("daily",   {"signal": "—", "p_sell": 0.333, "p_hold": 0.334, "p_buy": 0.333}),
+        "weekly":  horizons.get("weekly",  {"signal": "—", "p_sell": 0.333, "p_hold": 0.334, "p_buy": 0.333}),
+        "monthly": horizons.get("monthly", {"signal": "—", "p_sell": 0.333, "p_hold": 0.334, "p_buy": 0.333}),
+        # Portfolio
+        "portfolio_value":  portfolio.get("total_value", 100_000.0),
+        "pnl_today_pct":    portfolio.get("pnl_today_pct", 0.0),
+        "pnl_total_pct":    portfolio.get("pnl_total_pct", 0.0),
+        "sharpe_rolling":   last.get("sharpe_rolling", 0.0),
         "drawdown_current": last.get("drawdown_current", 0.0),
-        "model_status": _state["model_status"],
+        "model_status":     _state["model_status"],
     }
 
 
