@@ -12,11 +12,11 @@ PROFILES = {
     "1": {
         "name": "Full model (TFT only)",
         "description": (
-            "All 15 tickers · hidden=64 · 50 epochs max · 5 folds\n"
-            "  CPU: ~20-40 hours   |   RTX 3060: ~45-90 min"
+            "All 15 tickers · hidden=32 · 50 epochs max · 5 folds\n"
+            "  CPU: ~15-30 hours   |   RTX 3060: ~40-75 min"
         ),
         "tickers": None,           # None = use all from config
-        "hidden_size": 64,
+        "hidden_size": 32,         # matches config — intentionally small to avoid overfitting
         "batch_size": 64,
         "max_epochs": 50,
         "n_folds": 5,

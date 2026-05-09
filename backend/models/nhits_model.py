@@ -4,7 +4,7 @@ import shutil
 import torch
 import pandas as pd
 from loguru import logger
-from config import MODEL_DIR, TFT_HIDDEN_SIZE, TFT_MAX_EPOCHS, TFT_BATCH_SIZE
+from config import MODEL_DIR, TFT_HIDDEN_SIZE, TFT_MAX_EPOCHS, TFT_BATCH_SIZE, TFT_WEIGHT_DECAY
 
 
 class NHiTSModel:
@@ -26,6 +26,7 @@ class NHiTSModel:
             output_size=3,
             loss=CrossEntropy(),
             backcast_loss_ratio=0.1,
+            optimizer_kwargs={"weight_decay": TFT_WEIGHT_DECAY},
         )
         return cls(model)
 

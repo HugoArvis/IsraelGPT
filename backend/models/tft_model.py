@@ -7,6 +7,7 @@ from loguru import logger
 from config import (
     MODEL_DIR, ENCODER_LENGTH, PREDICTION_HORIZON,
     TFT_HIDDEN_SIZE, TFT_ATTENTION_HEAD_SIZE, TFT_DROPOUT, TFT_LSTM_LAYERS,
+    TFT_WEIGHT_DECAY,
 )
 from data.feature_engineering import FEATURE_COLUMNS
 
@@ -32,12 +33,13 @@ class TFTModel:
             hidden_size=TFT_HIDDEN_SIZE,
             attention_head_size=TFT_ATTENTION_HEAD_SIZE,
             dropout=TFT_DROPOUT,
-            hidden_continuous_size=32,
+            hidden_continuous_size=16,     # halved alongside hidden_size
             lstm_layers=TFT_LSTM_LAYERS,
-            output_size=3,         # SELL / HOLD / BUY
+            output_size=3,                 # SELL / HOLD / BUY
             loss=CrossEntropy(),
-            reduce_on_plateau_patience=4,
+            reduce_on_plateau_patience=2,  # lr scheduler also cuts early
             log_interval=10,
+            optimizer_kwargs={"weight_decay": TFT_WEIGHT_DECAY},
         )
         return cls(model)
 

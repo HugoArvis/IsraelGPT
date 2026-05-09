@@ -4,8 +4,12 @@ import mlflow
 import lightning as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from loguru import logger
-from config import TFT_BATCH_SIZE, TFT_MAX_EPOCHS, MODEL_DIR, MLFLOW_TRACKING_URI
+from config import (
+    TFT_BATCH_SIZE, TFT_MAX_EPOCHS, MODEL_DIR, MLFLOW_TRACKING_URI,
+    TFT_EARLY_STOPPING_PATIENCE, TFT_FEATURE_NOISE_STD,
+)
 from training.dataset import build_timeseries_dataset, build_weighted_train_dataloader
+from training.callbacks import FeatureNoiseCallback
 from models.nhits_model import NHiTSModel
 
 
@@ -37,17 +41,18 @@ def train_nhits(features_df, n_folds: int = 5):
         wrapper = NHiTSModel.from_dataset(train_dataset)
         model = wrapper._model
 
-        early_stop = EarlyStopping(monitor="val_loss", patience=5, mode="min")
+        early_stop = EarlyStopping(monitor="val_loss", patience=TFT_EARLY_STOPPING_PATIENCE, mode="min")
         checkpoint = ModelCheckpoint(
             dirpath=MODEL_DIR,
             filename=f"nhits_fold{fold+1}",
             monitor="val_loss",
             save_top_k=1,
         )
+        noise = FeatureNoiseCallback(noise_std=TFT_FEATURE_NOISE_STD)
 
         trainer = pl.Trainer(
             max_epochs=TFT_MAX_EPOCHS,
-            callbacks=[early_stop, checkpoint],
+            callbacks=[early_stop, checkpoint, noise],
             gradient_clip_val=0.1,
             enable_progress_bar=True,
             accelerator="auto",

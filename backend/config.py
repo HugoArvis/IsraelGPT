@@ -32,13 +32,16 @@ LABEL_MAP = {0: "SELL", 1: "HOLD", 2: "BUY"}
 CLASS_WEIGHTS = {0: 3.0, 1: 1.0, 2: 3.0}  # SELL, HOLD, BUY
 
 # TFT hyperparameters
-TFT_HIDDEN_SIZE = 64
-TFT_ATTENTION_HEAD_SIZE = 4
-TFT_DROPOUT = 0.1
-TFT_LSTM_LAYERS = 2
+TFT_HIDDEN_SIZE = 32          # kept small — dataset is ~38k rows, not millions
+TFT_ATTENTION_HEAD_SIZE = 2   # reduced: fewer params, less overfitting risk
+TFT_DROPOUT = 0.3             # raised from 0.1 — primary regularizer
+TFT_LSTM_LAYERS = 1           # single layer sufficient; 2 layers overfit on small data
 TFT_LEARNING_RATE = 1e-3
+TFT_WEIGHT_DECAY = 1e-3       # L2 penalty on all weights via AdamW
 TFT_MAX_EPOCHS = 50
 TFT_BATCH_SIZE = 64
+TFT_EARLY_STOPPING_PATIENCE = 3   # stop fast — patience 5 let models memorize noise
+TFT_FEATURE_NOISE_STD = 0.01      # Gaussian noise injected during training batches
 
 # PPO hyperparameters
 PPO_LR = 3e-4
