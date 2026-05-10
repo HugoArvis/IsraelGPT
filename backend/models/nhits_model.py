@@ -4,7 +4,8 @@ import shutil
 import torch
 import pandas as pd
 from loguru import logger
-from config import MODEL_DIR, TFT_HIDDEN_SIZE, TFT_MAX_EPOCHS, TFT_BATCH_SIZE, TFT_WEIGHT_DECAY
+from config import MODEL_DIR, TFT_HIDDEN_SIZE, TFT_MAX_EPOCHS, TFT_BATCH_SIZE, TFT_WEIGHT_DECAY, CLASS_WEIGHTS
+from models.tft_model import WeightedCrossEntropy
 
 
 class NHiTSModel:
@@ -17,16 +18,15 @@ class NHiTSModel:
     @classmethod
     def from_dataset(cls, dataset):
         from pytorch_forecasting import NHiTS
-        from pytorch_forecasting.metrics import CrossEntropy
 
         model = NHiTS.from_dataset(
             dataset,
             learning_rate=1e-3,
             hidden_size=TFT_HIDDEN_SIZE,
             output_size=3,
-            loss=CrossEntropy(),
+            loss=WeightedCrossEntropy(CLASS_WEIGHTS),
             backcast_loss_ratio=0.1,
-            optimizer_kwargs={"weight_decay": TFT_WEIGHT_DECAY},
+            weight_decay=TFT_WEIGHT_DECAY,
         )
         return cls(model)
 

@@ -1,15 +1,37 @@
 import os
 import glob
 import torch
+import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from loguru import logger
+from pytorch_forecasting.metrics import CrossEntropy
 from config import (
     MODEL_DIR, ENCODER_LENGTH, PREDICTION_HORIZON,
     TFT_HIDDEN_SIZE, TFT_ATTENTION_HEAD_SIZE, TFT_DROPOUT, TFT_LSTM_LAYERS,
-    TFT_WEIGHT_DECAY,
+    TFT_WEIGHT_DECAY, CLASS_WEIGHTS,
 )
 from data.feature_engineering import FEATURE_COLUMNS
+
+
+class WeightedCrossEntropy(CrossEntropy):
+    """CrossEntropy with per-class weights to prevent HOLD-class collapse."""
+
+    def __init__(self, class_weights: dict):
+        super().__init__()
+        n = len(class_weights)
+        self.register_buffer(
+            "class_weight",
+            torch.tensor([class_weights[i] for i in range(n)], dtype=torch.float32),
+        )
+
+    def loss(self, y_pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        return F.cross_entropy(
+            y_pred.view(-1, y_pred.size(-1)),
+            target.view(-1),
+            weight=self.class_weight,
+            reduction="none",
+        ).view(-1, target.size(-1))
 
 
 class TFTModel:
@@ -25,7 +47,6 @@ class TFTModel:
     @classmethod
     def from_dataset(cls, dataset):
         from pytorch_forecasting import TemporalFusionTransformer
-        from pytorch_forecasting.metrics import CrossEntropy
 
         model = TemporalFusionTransformer.from_dataset(
             dataset,
@@ -33,13 +54,13 @@ class TFTModel:
             hidden_size=TFT_HIDDEN_SIZE,
             attention_head_size=TFT_ATTENTION_HEAD_SIZE,
             dropout=TFT_DROPOUT,
-            hidden_continuous_size=16,     # halved alongside hidden_size
+            hidden_continuous_size=16,
             lstm_layers=TFT_LSTM_LAYERS,
-            output_size=3,                 # SELL / HOLD / BUY
-            loss=CrossEntropy(),
-            reduce_on_plateau_patience=2,  # lr scheduler also cuts early
+            output_size=3,
+            loss=WeightedCrossEntropy(CLASS_WEIGHTS),
+            reduce_on_plateau_patience=2,
             log_interval=10,
-            optimizer_kwargs={"weight_decay": TFT_WEIGHT_DECAY},
+            weight_decay=TFT_WEIGHT_DECAY,
         )
         return cls(model)
 

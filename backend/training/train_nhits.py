@@ -55,7 +55,8 @@ def train_nhits(features_df, n_folds: int = 5):
             callbacks=[early_stop, checkpoint, noise],
             gradient_clip_val=0.1,
             enable_progress_bar=True,
-            accelerator="auto",
+            accelerator="gpu",
+            devices=1,
         )
 
         with mlflow.start_run(run_name=f"nhits_fold{fold+1}", nested=True):

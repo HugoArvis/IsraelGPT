@@ -68,7 +68,7 @@ def build_weighted_train_dataloader(dataset, batch_size: int | None = None, half
     # dataset.index is a DataFrame where each row = one training sequence.
     # time_idx corresponds to the *start* of the encoder window; adding
     # max_encoder_length gives the approximate end (= prediction target date).
-    idx_series = dataset.index["time_idx"]
+    idx_series = dataset.index["time"]
     end_idx = idx_series + dataset.max_encoder_length  # recency proxy
     max_end = end_idx.max()
 

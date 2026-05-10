@@ -60,7 +60,8 @@ def train_supervised(features_df, n_folds: int = 5):
             callbacks=[early_stop, checkpoint, noise],
             gradient_clip_val=0.1,
             enable_progress_bar=True,
-            accelerator="auto",
+            accelerator="gpu",
+            devices=1,
         )
 
         with mlflow.start_run(run_name=f"tft_fold{fold+1}", nested=True):
@@ -77,26 +78,7 @@ def train_supervised(features_df, n_folds: int = 5):
         best_model.save(os.path.join(MODEL_DIR, "tft_latest.ckpt"))
         logger.info(f"Best TFT saved — val_loss={best_accuracy:.4f}")
 
-    # Train LightGBM daily (1d) and monthly (21d) models — fast (<2 min each)
-    _train_lgbm_horizons(features_df)
-
     return best_model
-
-
-def _train_lgbm_horizons(features_df):
-    """Train LightGBM models for daily and monthly horizons."""
-    try:
-        from models.lgbm_model import LGBMModel
-        for horizon in ("1d", "21d"):
-            label = "label_1d" if horizon == "1d" else "label_21d"
-            if label not in features_df.columns:
-                logger.warning(f"Column {label} missing — re-run fetch_prices + feature_engineering")
-                continue
-            logger.info(f"Training LightGBM [{horizon}]...")
-            m = LGBMModel.train(features_df, horizon=horizon)
-            m.save()
-    except Exception as e:
-        logger.error(f"LightGBM horizon training failed: {e}")
 
 
 if __name__ == "__main__":

@@ -65,14 +65,31 @@ DRAWDOWN_PENALTY_THRESHOLD = 0.15
 # Score / position formula constants
 SCORE_NEUTRAL = 5.0
 
-# Multi-horizon prediction weights (must sum to 1.0)
-# TFT covers the weekly signal; LightGBM covers daily and monthly.
-HORIZON_WEIGHTS = {"daily": 0.20, "weekly": 0.50, "monthly": 0.30}
+# Base multi-horizon weights for calm-market conditions (regime logic in strategy_scorer.py adjusts dynamically)
+# crisis: 5d=0.45 / 21d=0.55 (trend dominates)   calm: 5d=0.65 / 21d=0.35 (tactical dominates)
+HORIZON_WEIGHTS = {"weekly": 0.65, "monthly": 0.35}
 
 # Temporal sample weighting — exponential decay half-life in days.
 # Recent data gets weight ~1.0; data from HALF_LIFE days ago gets weight ~0.5.
 # Set to None to disable weighting entirely.
-TEMPORAL_WEIGHT_HALF_LIFE = 365
+TEMPORAL_WEIGHT_HALF_LIFE = 252   # ~1 trading year — prioritise recent regimes over distant history
+
+# Crisis periods for training oversampling and evaluation segmentation
+CRISIS_PERIODS = [
+    ("2008-09-01", "2009-03-31"),   # Global Financial Crisis
+    ("2011-08-01", "2011-10-31"),   # EU Debt Crisis
+    ("2018-10-01", "2018-12-31"),   # Q4 2018 selloff
+    ("2020-02-01", "2020-04-30"),   # COVID crash
+    ("2022-01-01", "2022-10-15"),   # Rate-hike bear market
+]
+RECOVERY_PERIODS = [
+    ("2009-04-01", "2009-12-31"),
+    ("2012-01-01", "2012-06-30"),
+    ("2019-01-01", "2019-06-30"),
+    ("2020-05-01", "2020-12-31"),
+    ("2022-10-16", "2023-06-30"),
+]
+CRISIS_SAMPLE_WEIGHT = 5.0   # multiplier applied to crisis-period rows during training
 
 # Scheduler (NY time)
 SCHEDULE_HOUR = 15

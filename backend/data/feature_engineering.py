@@ -69,6 +69,47 @@ def _load_sentiment(ticker: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
+def _compute_regime_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Market-state features that tell the model WHAT REGIME it is in.
+    All use only data available at time t (no look-ahead).
+    """
+    # VIX stress level: z-score and ordinal bucket (0=calm,1=normal,2=elevated,3=panic)
+    if "vix" in df.columns and df["vix"].notna().any():
+        vix = df["vix"]
+        vix_mean = vix.rolling(252, min_periods=63).mean()
+        vix_std  = vix.rolling(252, min_periods=63).std().replace(0, np.nan)
+        df["vix_z"]      = ((vix - vix_mean) / vix_std).fillna(0.0)
+        df["vix_regime"] = pd.cut(
+            vix, bins=[0, 15, 25, 35, 9999], labels=[0, 1, 2, 3]
+        ).astype(float).fillna(1.0)
+    else:
+        df["vix_z"]      = 0.0
+        df["vix_regime"] = 1.0
+
+    # SP500 position relative to 200-day MA and depth of drawdown from 252-day high
+    if "sp500" in df.columns and df["sp500"].notna().any():
+        sp = df["sp500"]
+        sp_200d = sp.rolling(200, min_periods=50).mean()
+        df["sp500_200d_ratio"] = (sp / sp_200d.replace(0, np.nan) - 1).fillna(0.0)
+
+        sp_high = sp.rolling(252, min_periods=63).max()
+        df["market_drawdown"] = ((sp - sp_high) / sp_high.replace(0, np.nan)).fillna(0.0)
+
+        # 3-month SP500 momentum — positive = uptrend, negative = downtrend
+        df["sp500_momentum"] = sp.pct_change(63).fillna(0.0)
+    else:
+        df["sp500_200d_ratio"] = 0.0
+        df["market_drawdown"]  = 0.0
+        df["sp500_momentum"]   = 0.0
+
+    # Stock's own drawdown from its 252-day high (how deep in the hole is this ticker)
+    stock_high = df["close"].rolling(252, min_periods=63).max()
+    df["stock_drawdown"] = ((df["close"] - stock_high) / stock_high.replace(0, np.nan)).fillna(0.0)
+
+    return df
+
+
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if not _TA_AVAILABLE:
         df["rsi_14"] = 50.0
@@ -106,6 +147,34 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _atr_thresholds(relative_return: pd.Series, atr: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """
+    Compute buy/sell thresholds that target ~25/50/25 SELL/HOLD/BUY distribution.
+    Uses rolling 252-day percentiles of relative_return, scaled by ATR regime ratio
+    so thresholds widen in high-volatility periods and compress in low-volatility ones.
+    """
+    window = 252
+    min_p  = 63
+
+    # Rolling 25th and 75th percentiles of relative_return (target the 25/50/25 split)
+    buy_pct  = relative_return.rolling(window, min_periods=min_p).quantile(0.75)
+    sell_pct = relative_return.rolling(window, min_periods=min_p).quantile(0.25)
+
+    # ATR regime ratio — scale thresholds with current vs average volatility
+    atr_aligned = atr.reindex(relative_return.index).ffill()
+    atr_mean    = atr_aligned.rolling(window, min_periods=min_p).mean()
+    atr_ratio   = (atr_aligned / atr_mean.replace(0, np.nan)).clip(0.5, 2.0).fillna(1.0)
+
+    buy_thresh  = (buy_pct  * atr_ratio).fillna(abs(BUY_THRESHOLD))
+    sell_thresh = (sell_pct * atr_ratio).fillna(SELL_THRESHOLD)  # sell_pct is negative
+
+    # Guard: buy_thresh must be positive, sell_thresh must be negative
+    buy_thresh  = buy_thresh.clip(lower=abs(BUY_THRESHOLD))
+    sell_thresh = sell_thresh.clip(upper=-abs(SELL_THRESHOLD))
+
+    return buy_thresh, sell_thresh
+
+
 def _compute_labels_for_horizon(df: pd.DataFrame, sp500_df: pd.DataFrame, horizon: int) -> np.ndarray:
     """Return a label array (0=SELL, 1=HOLD, 2=BUY) for a given forward horizon."""
     ticker_fwd = df["close"].shift(-horizon) / df["close"] - 1
@@ -116,22 +185,18 @@ def _compute_labels_for_horizon(df: pd.DataFrame, sp500_df: pd.DataFrame, horizo
     else:
         relative_return = ticker_fwd
 
-    rolling_vol = relative_return.rolling(20).std().fillna(abs(BUY_THRESHOLD))
-    buy_thresh  = rolling_vol.clip(lower=BUY_THRESHOLD)
-    sell_thresh = rolling_vol.clip(lower=abs(SELL_THRESHOLD))
+    buy_thresh, sell_thresh = _atr_thresholds(relative_return, df["atr_14"])
 
     return np.where(
         relative_return > buy_thresh, 2,
-        np.where(relative_return < -sell_thresh, 0, 1)
+        np.where(relative_return < sell_thresh, 0, 1)
     )
 
 
 def _compute_labels(df: pd.DataFrame, sp500_df: pd.DataFrame) -> pd.DataFrame:
     """
     Label each day: SELL=0, HOLD=1, BUY=2
-    Dynamic thresholds: 1× rolling 20-day volatility of relative returns,
-    floored at the base thresholds from config.
-    This prevents tiny thresholds in low-vol regimes and adapts to high-vol periods.
+    ATR-based dynamic thresholds targeting ~25/50/25 class balance.
     Data leakage safe: labels derived from future prices, never used as input features.
     """
     ticker_fwd = df["close"].shift(-PREDICTION_HORIZON) / df["close"] - 1
@@ -142,14 +207,11 @@ def _compute_labels(df: pd.DataFrame, sp500_df: pd.DataFrame) -> pd.DataFrame:
     else:
         relative_return = ticker_fwd
 
-    # Dynamic thresholds: rolling volatility, floored at base config values
-    rolling_vol = relative_return.rolling(20).std().fillna(abs(BUY_THRESHOLD))
-    buy_thresh = rolling_vol.clip(lower=BUY_THRESHOLD)
-    sell_thresh = rolling_vol.clip(lower=abs(SELL_THRESHOLD))
+    buy_thresh, sell_thresh = _atr_thresholds(relative_return, df["atr_14"])
 
     labels = np.where(
         relative_return > buy_thresh, 2,
-        np.where(relative_return < -sell_thresh, 0, 1)
+        np.where(relative_return < sell_thresh, 0, 1)
     )
     df["label"] = labels
     df["relative_return"] = relative_return
@@ -194,8 +256,22 @@ def build_features(ticker: str | None = None) -> pd.DataFrame:
                 for col in ["vix", "tnx", "dxy", "gold", "sp500"]:
                     df[col] = 0.0
 
+            df = _compute_regime_features(df)
+
             df["day_of_week"] = df.index.dayofweek
             df["quarter_end"] = ((df.index.month % 3 == 0) & (df.index.day >= 25)).astype(int)
+
+            # Lag returns — explicit temporal context for tree-based models
+            df["return_1d"]  = df["close"].pct_change(1)
+            df["return_5d"]  = df["close"].pct_change(5)
+            df["return_10d"] = df["close"].pct_change(10)
+            df["return_21d"] = df["close"].pct_change(21)
+
+            # Price-relative features — scale-invariant, better for trees than raw prices
+            df["close_sma20_ratio"] = df["close"] / df["sma_20"].replace(0, np.nan) - 1
+            df["close_sma50_ratio"] = df["close"] / df["sma_50"].replace(0, np.nan) - 1
+            bb_range = (df["bb_upper"] - df["bb_lower"]).replace(0, np.nan)
+            df["bb_position"] = (df["close"] - df["bb_lower"]) / bb_range
 
             df = _compute_labels(df, sp500_df)
             df["label_1d"]  = _compute_labels_for_horizon(df, sp500_df, 1)
@@ -209,6 +285,16 @@ def build_features(ticker: str | None = None) -> pd.DataFrame:
     if not all_frames:
         raise RuntimeError("No feature data could be built")
     combined = pd.concat(all_frames).sort_index()
+
+    # Cross-sectional return rank — where does this ticker rank among all tickers on the same day?
+    # Percentile 1.0 = top performer that day, 0.0 = worst. Strong empirical predictor (momentum factor).
+    for col, out in [("return_1d", "cs_rank_1d"), ("return_5d", "cs_rank_5d"), ("return_21d", "cs_rank_21d")]:
+        combined[out] = combined.groupby(level=0)[col].rank(pct=True).fillna(0.5)
+
+    # Encode ticker identity so LightGBM can learn ticker-specific patterns
+    ticker_map = {t: i for i, t in enumerate(sorted(combined["ticker"].unique()))}
+    combined["ticker_id"] = combined["ticker"].map(ticker_map).astype(int)
+
     logger.info(f"Features built: {len(combined)} rows across {len(all_frames)} tickers")
     return combined
 
@@ -220,7 +306,16 @@ FEATURE_COLUMNS = [
     "compound", "sentiment_pos", "sentiment_neg", "n_articles",
     "vix", "tnx", "dxy", "gold", "sp500",
     "day_of_week", "quarter_end",
+    "return_1d", "return_5d", "return_10d", "return_21d",
+    "close_sma20_ratio", "close_sma50_ratio", "bb_position",
+    # Regime features
+    "vix_z", "vix_regime", "sp500_200d_ratio", "market_drawdown", "stock_drawdown", "sp500_momentum",
+    # Cross-sectional momentum rank (percentile vs all tickers on the same day)
+    "cs_rank_1d", "cs_rank_5d", "cs_rank_21d",
+    "ticker_id",
 ]
+
+CATEGORICAL_FEATURES = ["ticker_id"]
 
 
 if __name__ == "__main__":
