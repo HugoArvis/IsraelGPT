@@ -28,6 +28,7 @@ gymnasium>=0.29.1
 
 # ── Alternative / comparison models ─────────────────────────────────────────
 lightgbm>=4.3.0
+catboost>=1.2.0
 scikit-learn>=1.4.0
 
 # ── Experiment tracking ──────────────────────────────────────────────────────

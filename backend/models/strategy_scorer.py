@@ -1,75 +1,68 @@
 import numpy as np
 import pandas as pd
 from loguru import logger
-from config import CONFIDENCE_THRESHOLD, SCORE_NEUTRAL
+from config import CONFIDENCE_THRESHOLD, SCORE_NEUTRAL, MAX_PREDICTED_RETURN, HORIZON_WEIGHTS
 
 
-def _dominant(p_sell: float, p_hold: float, p_buy: float) -> str:
-    return ["SELL", "HOLD", "BUY"][int(np.argmax([p_sell, p_hold, p_buy]))]
-
-
-def _strategy_text(weekly: str, monthly: str, confidence: float, conflicting: bool) -> str:
+def _strategy_text(ret: float, confidence: float, stress: float) -> str:
+    """Human-readable description of the signal."""
     if confidence < CONFIDENCE_THRESHOLD:
-        return "Low confidence — hold, no trade"
-    if conflicting:
-        return "5d/21d conflict — hold, wait for resolution"
-    if weekly == monthly:
-        if weekly == "BUY":
-            return "5d and 21d aligned → strong buy"
-        if weekly == "SELL":
-            return "5d and 21d aligned → strong sell"
-        return "Both horizons neutral — hold"
-    if weekly == "BUY" and monthly == "HOLD":
-        return "Short-term buy — monthly neutral, size down"
-    if weekly == "SELL" and monthly == "HOLD":
-        return "Short-term sell — monthly neutral, size down"
-    if weekly == "HOLD" and monthly == "BUY":
-        return "Long-term bullish, short-term pause — hold position"
-    if weekly == "HOLD" and monthly == "SELL":
-        return "Long-term bearish, short-term pause — reduce risk"
-    return "Mixed signals — hold"
+        return "Weak signal — no trade"
+    suffix = "  [stress: position reduced]" if stress > 0.60 else ""
+    pct = ret * 100
+    if ret > MAX_PREDICTED_RETURN * 0.80:
+        return f"Strong outperformance expected (+{pct:.1f}%) → strong buy{suffix}"
+    if ret > MAX_PREDICTED_RETURN * 0.40:
+        return f"Moderate outperformance (+{pct:.1f}%) → partial buy{suffix}"
+    if ret > MAX_PREDICTED_RETURN * 0.10:
+        return f"Slight outperformance (+{pct:.1f}%) → small buy{suffix}"
+    if ret < -MAX_PREDICTED_RETURN * 0.80:
+        return f"Strong underperformance ({pct:.1f}%) → strong sell{suffix}"
+    if ret < -MAX_PREDICTED_RETURN * 0.40:
+        return f"Moderate underperformance ({pct:.1f}%) → partial sell{suffix}"
+    if ret < -MAX_PREDICTED_RETURN * 0.10:
+        return f"Slight underperformance ({pct:.1f}%) → small sell{suffix}"
+    return f"Near-zero predicted alpha ({pct:.2f}%) — hold{suffix}"
 
 
 class MultiHorizonScorer:
     """
-    Fuses 5d (tactical) and 21d (trend) LightGBM models into one signal.
+    Fuses 5d and 21d regression predictions into a single position signal.
 
-    Fusion rules:
-    1. Regime-adaptive weights — in stress/crisis the 21d trend weight rises
-       (calm: 5d=0.65/21d=0.35  →  crisis: 5d=0.45/21d=0.55)
-    2. Conflict penalty — if 5d and 21d are in opposing non-HOLD directions,
-       directional probabilities are compressed toward HOLD by 25 pp.
+    The model outputs predicted forward relative return vs SP500.
+    Position is scaled linearly to MAX_PREDICTED_RETURN (±100% at ±3% alpha).
+
+    Fusion:
+    - 21d dominates (90%) — 5d near-random on recent data (31% direction accuracy)
+    - In stress regimes, position is reduced by up to 50%
+    - Signals below the confidence threshold produce zero position
     """
 
     def __init__(self):
-        self._lgbm_5d  = None
-        self._lgbm_21d = None
+        self._model_5d  = None
+        self._model_21d = None
 
     def load(self) -> "MultiHorizonScorer":
         from models.lgbm_model import LGBMModel
-        self._lgbm_5d  = LGBMModel.load_latest(horizon="5d")
-        self._lgbm_21d = LGBMModel.load_latest(horizon="21d")
-        loaded = sum(m is not None for m in [self._lgbm_5d, self._lgbm_21d])
-        logger.info(f"MultiHorizonScorer: {loaded}/2 models loaded (5d + 21d)")
+        from models.catboost_model import CatBoostModel
+        # 5d: CatBoost (IC 0.046, better rank signal — but direction acc ~50%, 5% weight only)
+        # 21d: LightGBM (IC 0.123, direction acc 55.4% — primary decision driver)
+        self._model_5d  = CatBoostModel.load_latest(horizon="5d")
+        self._model_21d = LGBMModel.load_latest(horizon="21d")
+        loaded = sum(m is not None for m in [self._model_5d, self._model_21d])
+        logger.info(f"MultiHorizonScorer: {loaded}/2 models loaded (CatBoost-5d + LGBM-21d)")
         return self
 
     @property
     def is_ready(self) -> bool:
-        return self._lgbm_5d is not None
+        return self._model_21d is not None
 
     def score(self, features: pd.DataFrame) -> dict:
-        # --- per-horizon raw probabilities ---
-        if self._lgbm_5d:
-            p_sell_5, p_hold_5, p_buy_5 = self._lgbm_5d.predict_latest(features)
-        else:
-            p_sell_5, p_hold_5, p_buy_5 = 0.333, 0.334, 0.333
+        # --- per-horizon predicted returns ---
+        ret_5d  = self._model_5d.predict_latest(features)  if self._model_5d  else 0.0
+        ret_21d = self._model_21d.predict_latest(features) if self._model_21d else 0.0
 
-        if self._lgbm_21d:
-            p_sell_21, p_hold_21, p_buy_21 = self._lgbm_21d.predict_latest(features)
-        else:
-            p_sell_21, p_hold_21, p_buy_21 = 0.333, 0.334, 0.333
-
-        # --- regime stress score: 0 = calm, 1 = crisis ---
+        # --- regime stress: 0 = calm, 1 = crisis ---
         try:
             last            = features.iloc[-1]
             vix_z           = float(last.get("vix_z", 0.0))
@@ -78,48 +71,40 @@ class MultiHorizonScorer:
         except Exception:
             stress = 0.0
 
-        # --- regime-adaptive weights ---
-        w5  = 0.65 - 0.20 * stress   # 0.65 (calm) → 0.45 (crisis)
-        w21 = 1.0 - w5               # 0.35 (calm) → 0.55 (crisis)
+        # --- horizon fusion: 5d noise-weighted, 21d dominates ---
+        w5  = HORIZON_WEIGHTS["weekly"]   # 0.10 (calm) → 0.05 (crisis)
+        w21 = HORIZON_WEIGHTS["monthly"]  # 0.90 (calm) → 0.95 (crisis)
+        # Apply stress adjustment
+        w5  = max(0.02, w5  - 0.05 * stress)
+        w21 = 1.0 - w5
+        ret = w5 * ret_5d + w21 * ret_21d
 
-        p_sell = w5 * p_sell_5 + w21 * p_sell_21
-        p_hold = w5 * p_hold_5 + w21 * p_hold_21
-        p_buy  = w5 * p_buy_5  + w21 * p_buy_21
+        # --- position sizing: linear scale, capped at ±MAX_PREDICTED_RETURN ---
+        raw_position = float(np.clip(ret / MAX_PREDICTED_RETURN, -1.0, 1.0))
 
-        # --- conflict penalty: opposing non-HOLD signals compress toward HOLD ---
-        sig5  = int(np.argmax([p_sell_5, p_hold_5, p_buy_5]))
-        sig21 = int(np.argmax([p_sell_21, p_hold_21, p_buy_21]))
-        conflicting = (sig5 != 1 and sig21 != 1 and sig5 != sig21)
-        if conflicting:
-            penalty = 0.25
-            p_sell *= (1.0 - penalty)
-            p_buy  *= (1.0 - penalty)
-            p_hold  = 1.0 - p_sell - p_buy
-
-        confidence = float(max(p_sell, p_hold, p_buy))
+        # Confidence = normalised signal strength (0→1)
+        confidence = min(abs(ret) / MAX_PREDICTED_RETURN, 1.0)
 
         if confidence < CONFIDENCE_THRESHOLD:
-            score        = SCORE_NEUTRAL
             position_pct = 0.0
+            score        = SCORE_NEUTRAL
         else:
-            score        = float(np.clip(5.0 + (p_buy - p_sell) * 5.0, 0.0, 10.0))
-            position_pct = (score - 5.0) / 5.0 * 100.0
-
-        weekly_signal  = _dominant(p_sell_5,  p_hold_5,  p_buy_5)
-        monthly_signal = _dominant(p_sell_21, p_hold_21, p_buy_21)
+            # Stress reduces position by up to 50% in crisis regimes
+            stress_factor = 1.0 - 0.5 * stress
+            position_pct  = round(raw_position * stress_factor * 100.0, 1)
+            score         = float(np.clip(5.0 + raw_position * 5.0, 0.0, 10.0))
 
         return {
-            "score":        round(score, 2),
-            "position_pct": round(position_pct, 1),
-            "p_sell":       round(p_sell, 4),
-            "p_hold":       round(p_hold, 4),
-            "p_buy":        round(p_buy, 4),
-            "confidence":   round(confidence, 4),
-            "conflicting":  conflicting,
-            "stress":       round(stress, 3),
-            "strategy":     _strategy_text(weekly_signal, monthly_signal, confidence, conflicting),
+            "score":                   round(score, 2),
+            "position_pct":            position_pct,
+            "predicted_return_5d":     round(ret_5d  * 100, 2),   # % vs SP500
+            "predicted_return_21d":    round(ret_21d * 100, 2),
+            "predicted_return":        round(ret     * 100, 2),    # combined signal
+            "confidence":              round(confidence, 4),
+            "stress":                  round(stress, 3),
+            "strategy":                _strategy_text(ret, confidence, stress),
             "horizons": {
-                "weekly":  {"signal": weekly_signal,  "p_sell": round(p_sell_5,  4), "p_hold": round(p_hold_5,  4), "p_buy": round(p_buy_5,  4)},
-                "monthly": {"signal": monthly_signal, "p_sell": round(p_sell_21, 4), "p_hold": round(p_hold_21, 4), "p_buy": round(p_buy_21, 4)},
+                "weekly":  {"predicted_return_pct": round(ret_5d  * 100, 2)},
+                "monthly": {"predicted_return_pct": round(ret_21d * 100, 2)},
             },
         }

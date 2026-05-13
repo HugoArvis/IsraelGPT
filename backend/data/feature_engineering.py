@@ -3,7 +3,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import numpy as np
 from loguru import logger
-from config import TICKERS, DATA_DIR, ENCODER_LENGTH, PREDICTION_HORIZON, SELL_THRESHOLD, BUY_THRESHOLD, MACRO_TICKERS
+from config import TICKERS, EQUITY_TICKERS, DATA_DIR, ENCODER_LENGTH, PREDICTION_HORIZON, SELL_THRESHOLD, BUY_THRESHOLD, MACRO_TICKERS
 
 try:
     import ta
@@ -219,7 +219,9 @@ def _compute_labels(df: pd.DataFrame, sp500_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_features(ticker: str | None = None) -> pd.DataFrame:
-    tickers = [ticker] if ticker else TICKERS
+    # EQUITY_TICKERS: stocks only — ETFs excluded from label generation
+    # TICKERS: everything fetched (equities + ETFs used for cross-sectional ranks)
+    tickers = [ticker] if ticker else EQUITY_TICKERS
     all_frames = []
 
     # Load SP500 for relative return calculation
@@ -267,6 +269,12 @@ def build_features(ticker: str | None = None) -> pd.DataFrame:
             df["return_10d"] = df["close"].pct_change(10)
             df["return_21d"] = df["close"].pct_change(21)
 
+            # Extended momentum factors (Jegadeesh-Titman / Fama-French)
+            # 3/6/12-month returns are among the strongest documented return predictors
+            df["return_63d"]  = df["close"].pct_change(63)
+            df["return_126d"] = df["close"].pct_change(126)
+            df["return_252d"] = df["close"].pct_change(252)
+
             # Price-relative features — scale-invariant, better for trees than raw prices
             df["close_sma20_ratio"] = df["close"] / df["sma_20"].replace(0, np.nan) - 1
             df["close_sma50_ratio"] = df["close"] / df["sma_50"].replace(0, np.nan) - 1
@@ -276,6 +284,17 @@ def build_features(ticker: str | None = None) -> pd.DataFrame:
             df = _compute_labels(df, sp500_df)
             df["label_1d"]  = _compute_labels_for_horizon(df, sp500_df, 1)
             df["label_21d"] = _compute_labels_for_horizon(df, sp500_df, 21)
+
+            # Regression targets — raw relative alpha for each horizon
+            # relative_return (5d) is already added by _compute_labels()
+            if sp500_df is not None and not sp500_df.empty:
+                sp500_a = sp500_df["close"].reindex(df.index).ffill()
+                df["relative_return_21d"] = (
+                    (df["close"].shift(-21) / df["close"] - 1)
+                    - (sp500_a.shift(-21) / sp500_a - 1)
+                )
+            else:
+                df["relative_return_21d"] = df["close"].shift(-21) / df["close"] - 1
             df["ticker"] = tkr
             df.dropna(subset=["rsi_14", "macd", "close"], inplace=True)
             all_frames.append(df)
@@ -288,7 +307,13 @@ def build_features(ticker: str | None = None) -> pd.DataFrame:
 
     # Cross-sectional return rank — where does this ticker rank among all tickers on the same day?
     # Percentile 1.0 = top performer that day, 0.0 = worst. Strong empirical predictor (momentum factor).
-    for col, out in [("return_1d", "cs_rank_1d"), ("return_5d", "cs_rank_5d"), ("return_21d", "cs_rank_21d")]:
+    for col, out in [
+        ("return_1d",  "cs_rank_1d"),
+        ("return_5d",  "cs_rank_5d"),
+        ("return_21d", "cs_rank_21d"),
+        ("return_63d", "cs_rank_63d"),
+        ("return_252d","cs_rank_252d"),
+    ]:
         combined[out] = combined.groupby(level=0)[col].rank(pct=True).fillna(0.5)
 
     # Encode ticker identity so LightGBM can learn ticker-specific patterns
@@ -307,11 +332,12 @@ FEATURE_COLUMNS = [
     "vix", "tnx", "dxy", "gold", "sp500",
     "day_of_week", "quarter_end",
     "return_1d", "return_5d", "return_10d", "return_21d",
+    "return_63d", "return_126d", "return_252d",
     "close_sma20_ratio", "close_sma50_ratio", "bb_position",
     # Regime features
     "vix_z", "vix_regime", "sp500_200d_ratio", "market_drawdown", "stock_drawdown", "sp500_momentum",
     # Cross-sectional momentum rank (percentile vs all tickers on the same day)
-    "cs_rank_1d", "cs_rank_5d", "cs_rank_21d",
+    "cs_rank_1d", "cs_rank_5d", "cs_rank_21d", "cs_rank_63d", "cs_rank_252d",
     "ticker_id",
 ]
 

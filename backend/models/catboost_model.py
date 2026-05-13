@@ -1,27 +1,24 @@
 import os
 import json
-import pickle
 import numpy as np
 import pandas as pd
 from loguru import logger
 from config import MODEL_DIR, TEMPORAL_WEIGHT_HALF_LIFE, CRISIS_PERIODS, CRISIS_SAMPLE_WEIGHT
 from data.feature_engineering import FEATURE_COLUMNS, CATEGORICAL_FEATURES
 
-# Maps horizon → (regression target column, checkpoint filename)
 _HORIZON_MAP = {
-    "5d":  ("relative_return",     "lgbm_5d.pkl"),
-    "21d": ("relative_return_21d", "lgbm_21d.pkl"),
+    "5d":  ("relative_return",     "catboost_5d.cbm"),
+    "21d": ("relative_return_21d", "catboost_21d.cbm"),
 }
 
+_CAT_INDICES = [FEATURE_COLUMNS.index(c) for c in CATEGORICAL_FEATURES if c in FEATURE_COLUMNS]
 
-class LGBMModel:
+
+class CatBoostModel:
     """
-    LightGBM regressor predicting forward relative return vs SP500.
-    Positive output = stock expected to outperform SP500 over the horizon.
-    Negative output = expected underperformance.
-
-    Position sizing is handled by strategy_scorer.py using the raw return value.
-    horizon: "5d" (weekly), "21d" (monthly, primary)
+    CatBoost regressor predicting forward relative return vs SP500.
+    Same predict_latest() / evaluate() interface as LGBMModel.
+    Positive output = expected outperformance, negative = underperformance.
     """
 
     def __init__(self, model=None, horizon: str = "5d"):
@@ -40,7 +37,7 @@ class LGBMModel:
 
     @classmethod
     def _load_best_params(cls, horizon: str) -> dict | None:
-        path = os.path.join(MODEL_DIR, f"lgbm_best_params_{horizon}.json")
+        path = os.path.join(MODEL_DIR, f"catboost_best_params_{horizon}.json")
         if os.path.exists(path):
             with open(path) as f:
                 return json.load(f)
@@ -48,40 +45,35 @@ class LGBMModel:
 
     @classmethod
     def _make_regressor(cls, custom_params: dict | None = None):
-        import lightgbm as lgb
+        try:
+            from catboost import CatBoostRegressor
+        except ImportError:
+            raise RuntimeError("catboost not installed — run: pip install catboost")
         base = dict(
-            n_estimators=800,
+            iterations=800,
             learning_rate=0.03,
-            num_leaves=63,
-            max_depth=6,
-            min_child_samples=50,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
-            objective="huber",      # robust to outlier returns
-            alpha=1.0,              # Huber loss threshold
-            random_state=42,
-            n_jobs=-1,
-            verbose=-1,
+            depth=6,
+            l2_leaf_reg=3.0,
+            loss_function="RMSE",
+            random_seed=42,
+            verbose=0,
         )
         if custom_params:
             base.update(custom_params)
-        return lgb.LGBMRegressor(**base)
+        return CatBoostRegressor(**base)
 
     @classmethod
-    def train(cls, features: pd.DataFrame, horizon: str = "5d") -> "LGBMModel":
-        """Train on forward relative return (regression target)."""
+    def train(cls, features: pd.DataFrame, horizon: str = "5d") -> "CatBoostModel":
         try:
-            import lightgbm as lgb
+            from catboost import Pool
         except ImportError:
-            raise RuntimeError("lightgbm not installed — run: pip install lightgbm")
+            raise RuntimeError("catboost not installed — run: pip install catboost")
 
         target_col = _HORIZON_MAP[horizon][0]
         df = features.copy().dropna(subset=[target_col])
         df = df.sort_index()
 
-        X = df[FEATURE_COLUMNS].fillna(0).values.astype(np.float32)
+        X = df[FEATURE_COLUMNS].fillna(0)
         y = df[target_col].astype(np.float32).values
 
         # Temporal sample weights
@@ -98,54 +90,58 @@ class LGBMModel:
             mask = (idx >= pd.Timestamp(start)) & (idx <= pd.Timestamp(end))
             sample_weight[mask] *= CRISIS_SAMPLE_WEIGHT
 
-        feat_df = pd.DataFrame(X, columns=FEATURE_COLUMNS)
+        train_pool = Pool(
+            data=X,
+            label=y,
+            weight=sample_weight,
+            cat_features=_CAT_INDICES,
+        )
 
         best_params = cls._load_best_params(horizon)
         if best_params:
-            logger.info(f"LightGBM [{horizon}] using tuned hyperparameters")
+            logger.info(f"CatBoost [{horizon}] using tuned hyperparameters")
         model = cls._make_regressor(custom_params=best_params)
-        model.fit(
-            feat_df, y,
-            sample_weight=sample_weight,
-            categorical_feature=CATEGORICAL_FEATURES,
-        )
+        model.fit(train_pool)
+
         logger.info(
-            f"LightGBM [{horizon}] trained — {model.n_estimators_} trees, "
-            f"target={target_col}, samples={len(feat_df)}"
+            f"CatBoost [{horizon}] trained — {model.tree_count_} trees, "
+            f"target={target_col}, samples={len(X)}"
         )
         return cls(model, horizon=horizon)
 
     def save(self, path: str | None = None):
         os.makedirs(MODEL_DIR, exist_ok=True)
         path = path or self._ckpt
-        with open(path, "wb") as f:
-            pickle.dump(self._model, f)
-        logger.info(f"LightGBM [{self._horizon}] saved to {path}")
+        self._model.save_model(path)
+        logger.info(f"CatBoost [{self._horizon}] saved to {path}")
 
     @classmethod
-    def load_latest(cls, horizon: str = "5d") -> "LGBMModel | None":
+    def load_latest(cls, horizon: str = "5d") -> "CatBoostModel | None":
+        try:
+            from catboost import CatBoostRegressor
+        except ImportError:
+            return None
         inst = cls(horizon=horizon)
         if not os.path.exists(inst._ckpt):
             return None
         try:
-            with open(inst._ckpt, "rb") as f:
-                model = pickle.load(f)
-            logger.info(f"LightGBM [{horizon}] loaded from {inst._ckpt}")
+            model = CatBoostRegressor()
+            model.load_model(inst._ckpt)
+            logger.info(f"CatBoost [{horizon}] loaded from {inst._ckpt}")
             return cls(model, horizon=horizon)
         except Exception as e:
-            logger.error(f"Failed to load LightGBM [{horizon}]: {e}")
+            logger.error(f"Failed to load CatBoost [{horizon}]: {e}")
             return None
 
     def predict_latest(self, features: pd.DataFrame) -> float:
-        """Return predicted forward relative return for the most recent row.
-        Positive = expected outperformance vs SP500, negative = underperformance."""
+        """Return predicted forward relative return for the most recent row."""
         if self._model is None:
             return 0.0
         try:
-            row = features[FEATURE_COLUMNS].iloc[[-1]].fillna(0).astype(np.float32)
+            row = features[FEATURE_COLUMNS].iloc[[-1]].fillna(0)
             return float(self._model.predict(row)[0])
         except Exception as e:
-            logger.error(f"LightGBM [{self._horizon}] prediction failed: {e}")
+            logger.error(f"CatBoost [{self._horizon}] prediction failed: {e}")
             return 0.0
 
     def evaluate(self, features: pd.DataFrame) -> dict:
@@ -156,7 +152,7 @@ class LGBMModel:
             from sklearn.metrics import mean_absolute_error
             from scipy import stats
             df = features.dropna(subset=[self._target_col])
-            X = df[FEATURE_COLUMNS].fillna(0).astype(np.float32)
+            X = df[FEATURE_COLUMNS].fillna(0)
             y_true = df[self._target_col].astype(np.float32).values
             y_pred = self._model.predict(X).astype(np.float32)
 
@@ -172,5 +168,5 @@ class LGBMModel:
                 "rmse":               rmse,
             }
         except Exception as e:
-            logger.error(f"LightGBM [{self._horizon}] evaluation failed: {e}")
+            logger.error(f"CatBoost [{self._horizon}] evaluation failed: {e}")
             return {}
