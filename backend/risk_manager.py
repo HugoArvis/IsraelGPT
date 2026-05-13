@@ -11,15 +11,11 @@ from config import (
 class RiskManager:
     """Hard-coded risk rules. Never bypass."""
 
-    def check_confidence(self, p_sell: float, p_hold: float, p_buy: float) -> tuple[float, float]:
+    def check_confidence(self, confidence: float, score: float, position_pct: float) -> tuple[float, float]:
         """Return (score, position_pct). Forces neutral if confidence too low."""
-        confidence = max(p_sell, p_hold, p_buy)
         if confidence < CONFIDENCE_THRESHOLD:
             logger.warning(f"Confidence {confidence:.3f} < {CONFIDENCE_THRESHOLD} — forcing neutral")
             return 5.0, 0.0
-        score = 5.0 + (p_buy - p_sell) * 5.0
-        score = max(0.0, min(10.0, score))
-        position_pct = (score - 5.0) / 5.0 * 100.0
         return score, position_pct
 
     def clamp_position(self, position_pct: float, portfolio_value: float, ticker: str) -> float:
@@ -63,9 +59,9 @@ class RiskManager:
     def validate_order(
         self,
         ticker: str,
-        p_sell: float,
-        p_hold: float,
-        p_buy: float,
+        confidence: float,
+        score: float,
+        position_pct: float,
         portfolio_value: float,
         start_value: float,
         avg_volume: float,
@@ -84,7 +80,7 @@ class RiskManager:
         if self.check_earnings_blackout(hours_to_earnings, ticker):
             return 5.0, 0.0, False
 
-        score, position_pct = self.check_confidence(p_sell, p_hold, p_buy)
+        score, position_pct = self.check_confidence(confidence, score, position_pct)
         if position_pct == 0.0:
             return score, 0.0, False
 

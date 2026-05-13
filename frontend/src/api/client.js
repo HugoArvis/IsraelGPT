@@ -24,4 +24,5 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ confirm: true }),
     }),
+  runNow: () => request("/model/run-now", { method: "POST" }),
 };

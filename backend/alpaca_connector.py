@@ -138,9 +138,9 @@ class AlpacaConnector:
             risk = RiskManager()
             score, position_pct, should_trade = risk.validate_order(
                 ticker=PRIMARY_TICKER,
-                p_sell=result["p_sell"],
-                p_hold=result["p_hold"],
-                p_buy=result["p_buy"],
+                confidence=result["confidence"],
+                score=result["score"],
+                position_pct=result["position_pct"],
                 portfolio_value=portfolio["total_value"],
                 start_value=self._start_value,
                 avg_volume=5_000_000,
@@ -151,9 +151,9 @@ class AlpacaConnector:
 
             logger.info(
                 f"Signal: score={score:.2f}  "
-                f"daily={result['horizons']['daily']['signal']}  "
-                f"weekly={result['horizons']['weekly']['signal']}  "
-                f"monthly={result['horizons']['monthly']['signal']}  "
+                f"ret_5d={result['predicted_return_5d']:+.2f}%  "
+                f"ret_21d={result['predicted_return_21d']:+.2f}%  "
+                f"confidence={result['confidence']:.3f}  "
                 f"→ {result['strategy']}"
             )
 

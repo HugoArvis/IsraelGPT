@@ -26,6 +26,8 @@ def fetch_prices(ticker: str, force: bool = False) -> pd.DataFrame:
         logger.info(f"{ticker}: incremental fetch from {start}")
         new_data = yf.download(ticker, start=start, auto_adjust=True, progress=False)
         if not new_data.empty:
+            if isinstance(new_data.columns, pd.MultiIndex):
+                new_data.columns = new_data.columns.get_level_values(0)
             new_data.index = pd.to_datetime(new_data.index)
             df = pd.concat([df, new_data[~new_data.index.isin(df.index)]])
             df.sort_index(inplace=True)
@@ -37,7 +39,6 @@ def fetch_prices(ticker: str, force: bool = False) -> pd.DataFrame:
     df = yf.download(ticker, start=start_date, auto_adjust=True, progress=False)
     if df.empty:
         raise ValueError(f"No price data returned for {ticker}")
-    # Flatten MultiIndex columns produced by yfinance 1.x
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.index = pd.to_datetime(df.index)

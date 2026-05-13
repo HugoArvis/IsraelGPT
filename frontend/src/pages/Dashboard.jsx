@@ -65,21 +65,29 @@ export default function Dashboard() {
           <ScoreGauge score={score} />
           <div className="mt-4 grid grid-cols-3 gap-3 w-full text-center text-xs">
             <div>
-              <p className="text-gray-400">P(Sell)</p>
-              <p className="text-brand-red font-bold">{((d?.p_sell ?? 0.333) * 100).toFixed(1)}%</p>
+              <p className="text-gray-400">5d Alpha</p>
+              <p className={`font-bold ${(d?.predicted_return_5d ?? 0) >= 0 ? "text-brand-green" : "text-brand-red"}`}>
+                {(d?.predicted_return_5d ?? 0) >= 0 ? "+" : ""}{(d?.predicted_return_5d ?? 0).toFixed(2)}%
+              </p>
             </div>
             <div>
-              <p className="text-gray-400">P(Hold)</p>
-              <p className="text-brand-yellow font-bold">{((d?.p_hold ?? 0.334) * 100).toFixed(1)}%</p>
+              <p className="text-gray-400">21d Alpha</p>
+              <p className={`font-bold ${(d?.predicted_return_21d ?? 0) >= 0 ? "text-brand-green" : "text-brand-red"}`}>
+                {(d?.predicted_return_21d ?? 0) >= 0 ? "+" : ""}{(d?.predicted_return_21d ?? 0).toFixed(2)}%
+              </p>
             </div>
             <div>
-              <p className="text-gray-400">P(Buy)</p>
-              <p className="text-brand-green font-bold">{((d?.p_buy ?? 0.333) * 100).toFixed(1)}%</p>
+              <p className="text-gray-400">Confidence</p>
+              <p className="text-brand-yellow font-bold">{((d?.confidence ?? 0) * 100).toFixed(0)}%</p>
             </div>
           </div>
-          <p className="text-xs text-gray-400 mt-3">
+          <p className="text-xs text-gray-400 mt-2">
             Position: <span className="text-white font-semibold">{(d?.position_pct ?? 0).toFixed(0)}%</span>
+            {" · "}Stress: <span className="text-white font-semibold">{((d?.stress ?? 0) * 100).toFixed(0)}%</span>
           </p>
+          {d?.strategy && (
+            <p className="text-xs text-gray-500 mt-2 text-center italic">{d.strategy}</p>
+          )}
         </div>
 
         <div className="lg:col-span-2 bg-brand-card border border-brand-border rounded-lg p-4">

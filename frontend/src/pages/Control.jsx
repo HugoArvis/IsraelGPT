@@ -70,6 +70,20 @@ export default function Control() {
         </button>
       </div>
 
+      <div className="bg-brand-card border border-brand-border rounded-lg p-5 space-y-3">
+        <p className="text-xs text-gray-400">
+          Run inference now — fetches latest prices, runs the model, and updates
+          the dashboard immediately (normally runs automatically at 15:30 NY).
+        </p>
+        <button
+          disabled={loading || !isActive}
+          onClick={() => handle(api.runNow)}
+          className="w-full py-2 rounded-lg bg-brand-accent text-black font-semibold text-sm disabled:opacity-40 hover:opacity-90 transition-opacity"
+        >
+          Run Inference Now
+        </button>
+      </div>
+
       {msg && (
         <p
           className={`text-sm px-3 py-2 rounded border ${

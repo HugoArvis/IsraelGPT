@@ -108,6 +108,32 @@ def model_stop():
     return {"status": "stopped"}
 
 
+@app.post("/api/model/run-now")
+async def model_run_now():
+    """Trigger inference in background — returns immediately, dashboard updates via WebSocket."""
+    if _state["model_status"] != "active":
+        raise HTTPException(status_code=400, detail="Model must be started first")
+
+    async def _run():
+        try:
+            from data.fetch_prices import fetch_latest_prices
+            from data.feature_engineering import build_features
+            import asyncio
+            logger.info("Manual run-now triggered")
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, fetch_latest_prices)
+            features = await loop.run_in_executor(None, build_features)
+            result = await loop.run_in_executor(None, alpaca.run_inference_and_trade, features)
+            if result:
+                _state["last_signal"] = result
+                logger.info(f"run-now complete: score={result.get('score')} strategy={result.get('strategy')}")
+        except Exception as e:
+            logger.error(f"run-now failed: {e}")
+
+    asyncio.create_task(_run())
+    return {"status": "running", "detail": "Inference started — dashboard will update in ~30s via WebSocket"}
+
+
 @app.post("/api/model/kill")
 async def model_kill(body: dict):
     if not body.get("confirm"):
@@ -144,17 +170,17 @@ def _build_live_payload() -> dict:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ticker": last.get("ticker", PRIMARY_TICKER),
         # Combined multi-horizon signal
-        "score":        last.get("score", 5.0),
-        "p_sell":       last.get("p_sell", 0.333),
-        "p_hold":       last.get("p_hold", 0.334),
-        "p_buy":        last.get("p_buy", 0.333),
-        "confidence":   last.get("confidence", 0.0),
-        "position_pct": last.get("position_pct", 0),
-        "strategy":     last.get("strategy", "—"),
+        "score":                last.get("score", 5.0),
+        "confidence":           last.get("confidence", 0.0),
+        "position_pct":         last.get("position_pct", 0),
+        "predicted_return":     last.get("predicted_return", 0.0),
+        "predicted_return_5d":  last.get("predicted_return_5d", 0.0),
+        "predicted_return_21d": last.get("predicted_return_21d", 0.0),
+        "stress":               last.get("stress", 0.0),
+        "strategy":             last.get("strategy", "—"),
         # Per-horizon breakdown
-        "daily":   horizons.get("daily",   {"signal": "—", "p_sell": 0.333, "p_hold": 0.334, "p_buy": 0.333}),
-        "weekly":  horizons.get("weekly",  {"signal": "—", "p_sell": 0.333, "p_hold": 0.334, "p_buy": 0.333}),
-        "monthly": horizons.get("monthly", {"signal": "—", "p_sell": 0.333, "p_hold": 0.334, "p_buy": 0.333}),
+        "weekly":  horizons.get("weekly",  {"predicted_return_pct": 0.0}),
+        "monthly": horizons.get("monthly", {"predicted_return_pct": 0.0}),
         # Portfolio
         "portfolio_value":  portfolio.get("total_value", 100_000.0),
         "pnl_today_pct":    portfolio.get("pnl_today_pct", 0.0),
